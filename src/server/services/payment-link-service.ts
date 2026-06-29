@@ -2,7 +2,7 @@ import "server-only";
 
 import { prisma } from "@/server/db/prisma";
 import { Errors } from "@/server/http/errors";
-import { getEnv } from "@/lib/env";
+import { getAppBaseUrl } from "@/server/base-url";
 import { generateSlug } from "@/lib/ids";
 import { buildPageMeta, type PageMeta, type PageParams } from "@/lib/pagination";
 import {
@@ -27,16 +27,12 @@ const include = {
   _count: { select: { payments: true } },
 } as const;
 
-function publicUrl(slug: string): string {
-  return `${getEnv().APP_URL.replace(/\/$/, "")}/p/${slug}`;
-}
-
-function toDTO(link: LinkRow): PaymentLinkDTO {
+function toDTO(link: LinkRow, baseUrl: string): PaymentLinkDTO {
   return {
     id: link.id,
     slug: link.slug,
     memo: link.memo,
-    url: publicUrl(link.slug),
+    url: `${baseUrl}/p/${link.slug}`,
     active: link.active,
     paymentCount: link._count.payments,
     product: {
@@ -76,7 +72,8 @@ export async function listPaymentLinks(
     }),
     prisma.paymentLink.count({ where }),
   ]);
-  return { links: rows.map(toDTO), meta: buildPageMeta(params, total) };
+  const baseUrl = await getAppBaseUrl();
+  return { links: rows.map((r) => toDTO(r, baseUrl)), meta: buildPageMeta(params, total) };
 }
 
 async function findOwned(userId: string, id: string): Promise<LinkRow> {
@@ -86,7 +83,7 @@ async function findOwned(userId: string, id: string): Promise<LinkRow> {
 }
 
 export async function getPaymentLink(userId: string, id: string): Promise<PaymentLinkDTO> {
-  return toDTO(await findOwned(userId, id));
+  return toDTO(await findOwned(userId, id), await getAppBaseUrl());
 }
 
 export async function createPaymentLink(
@@ -107,7 +104,7 @@ export async function createPaymentLink(
         data: { userId, productId, slug, memo: slug },
         include,
       });
-      return toDTO(link);
+      return toDTO(link, await getAppBaseUrl());
     } catch (err) {
       if (err && typeof err === "object" && "code" in err && err.code === "P2002") continue;
       throw err;
@@ -123,7 +120,7 @@ export async function setPaymentLinkActive(
 ): Promise<PaymentLinkDTO> {
   await findOwned(userId, id);
   const link = await prisma.paymentLink.update({ where: { id }, data: { active }, include });
-  return toDTO(link);
+  return toDTO(link, await getAppBaseUrl());
 }
 
 export async function deletePaymentLink(userId: string, id: string): Promise<void> {
