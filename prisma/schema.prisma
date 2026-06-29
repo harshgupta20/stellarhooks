@@ -1,0 +1,320 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Network {
+  TESTNET
+  PUBLIC
+}
+
+enum WalletStatus {
+  ACTIVE
+  PAUSED
+}
+
+enum WebhookStatus {
+  ACTIVE
+  PAUSED
+}
+
+enum DeliveryStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  EXHAUSTED
+}
+
+model User {
+  id             String   @id @default(cuid())
+  email          String   @unique
+  name           String?
+  hashedPassword String
+  plan           Plan     @default(FREE)
+  role           Role     @default(USER)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  wallets      Wallet[]
+  webhooks     Webhook[]
+  apiKeys      ApiKey[]
+  cloudWallets CloudWallet[]
+  products     Product[]
+  paymentLinks PaymentLink[]
+  payments     Payment[]
+  questions    Question[]
+  comments     CommunityComment[]
+
+  @@map("users")
+}
+
+enum Plan {
+  FREE
+  PRO
+  SCALE
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+/** Admin-editable resource caps per plan. limit = -1 means unlimited. */
+model PlanLimit {
+  id       String @id @default(cuid())
+  plan     Plan
+  resource String
+  limit    Int
+
+  @@unique([plan, resource])
+  @@map("plan_limits")
+}
+
+model CloudWallet {
+  id              String   @id @default(cuid())
+  userId          String
+  name            String
+  network         Network  @default(TESTNET)
+  publicKey       String
+  encryptedSecret String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, publicKey])
+  @@index([userId])
+  @@map("cloud_wallets")
+}
+
+model ApiKey {
+  id         String    @id @default(cuid())
+  userId     String
+  name       String
+  hashedKey  String    @unique
+  prefix     String
+  network    Network   @default(TESTNET)
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("api_keys")
+}
+
+model Wallet {
+  id         String       @id @default(cuid())
+  userId     String
+  name       String
+  address    String
+  network    Network      @default(TESTNET)
+  status     WalletStatus @default(ACTIVE)
+  lastCursor String?
+  lastSyncAt DateTime?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  events   Event[]
+  products Product[]
+  payments Payment[]
+
+  // A user cannot register the same address twice on the same network.
+  @@unique([userId, address, network])
+  @@index([userId])
+  @@index([status])
+  @@map("wallets")
+}
+
+model Webhook {
+  id        String        @id @default(cuid())
+  userId    String
+  name      String
+  url       String
+  secret    String
+  events    String[]
+  network   Network       @default(TESTNET)
+  status    WebhookStatus @default(ACTIVE)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries Delivery[]
+
+  @@index([userId])
+  @@index([status])
+  @@map("webhooks")
+}
+
+model Event {
+  id              String   @id @default(cuid())
+  walletId        String
+  type            String
+  amount          Decimal  @db.Decimal(30, 7)
+  asset           String
+  fromAddress     String
+  toAddress       String
+  transactionHash String
+  ledgerCursor    String
+  // Set for payment.completed events fired by the Payments module.
+  paymentId       String?  @unique
+  createdAt       DateTime @default(now())
+
+  wallet     Wallet     @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  payment    Payment?   @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  deliveries Delivery[]
+
+  // A transaction is processed at most once per event type for a wallet, so a
+  // payment can yield both payment.received and payment.completed.
+  @@unique([walletId, transactionHash, type])
+  @@index([walletId, createdAt])
+  @@map("events")
+}
+
+model Delivery {
+  id             String         @id @default(cuid())
+  eventId        String
+  webhookId      String
+  status         DeliveryStatus @default(PENDING)
+  attempts       Int            @default(0)
+  responseCode   Int?
+  responseTimeMs Int?
+  nextRetryAt    DateTime?
+  lastError      String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  event   Event   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  webhook Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@index([webhookId])
+  @@index([eventId])
+  @@index([status, nextRetryAt])
+  @@map("deliveries")
+}
+
+// ===================== Payments module =====================
+
+enum PriceType {
+  FIXED
+  CUSTOM
+}
+
+enum PaymentStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+}
+
+model Product {
+  id          String    @id @default(cuid())
+  userId      String
+  walletId    String
+  name        String
+  description String?
+  imageUrl    String?
+  assetCode   String // "XLM" or e.g. "USDC"
+  assetIssuer String? // required for non-native assets
+  priceType   PriceType @default(FIXED)
+  price       Decimal?  @db.Decimal(30, 7) // for FIXED
+  minAmount   Decimal?  @db.Decimal(30, 7) // for CUSTOM
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  wallet       Wallet        @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  paymentLinks PaymentLink[]
+  payments     Payment[]
+
+  @@index([userId])
+  @@index([walletId])
+  @@map("products")
+}
+
+model PaymentLink {
+  id        String   @id @default(cuid())
+  userId    String
+  productId String
+  slug      String   @unique // URL: /p/<slug>
+  memo      String   @unique // on-chain text memo used to match payments
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product  Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  payments Payment[]
+
+  @@index([userId])
+  @@index([productId])
+  @@map("payment_links")
+}
+
+model Payment {
+  id              String        @id @default(cuid())
+  userId          String
+  productId       String
+  paymentLinkId   String?
+  walletId        String
+  amount          Decimal       @db.Decimal(30, 7)
+  assetCode       String
+  assetIssuer     String?
+  memo            String?
+  senderAddress   String?
+  receiverAddress String
+  transactionHash String        @unique
+  ledgerCursor    String?
+  status          PaymentStatus @default(PENDING)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product     Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  paymentLink PaymentLink? @relation(fields: [paymentLinkId], references: [id], onDelete: SetNull)
+  wallet      Wallet       @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  event       Event?
+
+  @@index([userId, createdAt])
+  @@index([productId])
+  @@index([status])
+  @@map("payments")
+}
+
+// ===================== Community Q&A =====================
+
+model Question {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String
+  body      String
+  category  String
+  resolved  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  comments CommunityComment[]
+
+  @@index([category])
+  @@index([createdAt])
+  @@map("questions")
+}
+
+model CommunityComment {
+  id         String   @id @default(cuid())
+  questionId String
+  userId     String
+  body       String
+  createdAt  DateTime @default(now())
+
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([questionId])
+  @@map("community_comments")
+}

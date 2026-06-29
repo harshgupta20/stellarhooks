@@ -1,0 +1,35 @@
+# Free polling scheduler for StellarHooks.
+#
+# GitHub Actions' minimum cron interval is 5 minutes (and runs are best-effort,
+# so they can be delayed). For tighter latency, use cron-job.org (1-minute) and
+# point it at the same two endpoints — see README "Scheduling the poller".
+#
+# Required repository secrets:
+#   APP_URL      e.g. https://your-app.vercel.app
+#   CRON_SECRET  must match the CRON_SECRET in your deployment's env
+name: poll-stellar
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Poll wallets
+        run: |
+          curl -fsS -X POST "$APP_URL/api/cron/poll" \
+            -H "Authorization: Bearer $CRON_SECRET"
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+
+      - name: Process due retries
+        run: |
+          curl -fsS -X POST "$APP_URL/api/cron/retry" \
+            -H "Authorization: Bearer $CRON_SECRET"
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
